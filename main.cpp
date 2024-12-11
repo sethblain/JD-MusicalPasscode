@@ -22,7 +22,7 @@ void setup() {
 void loop() {
   // Wait for button press
   if (digitalRead(buttonPin) == LOW) {
-    Serial.println("Button pressed! Listening for 5 seconds...");
+    Serial.println("Button pressed! Listening...");
     delay(50); // Debounce delay
     String note = identifyNote(); // Call the function to identify the note
     if (note != "") {
@@ -38,46 +38,68 @@ void loop() {
 // Function to identify the note with the highest volume
 String identifyNote() {
   unsigned long startTime = millis();
-  float maxVolume = 0; // Track maximum volume
-  float fundamentalFrequency = 0; // Track frequency corresponding to max volume
-  const int threshold = 450; // Minimum signal level to consider
-  String detectedNote = ""; // Store the detected note
+  const int threshold = 550; // Minimum signal level to consider
+  float fundamentalFrequency = 0;
+  float validPeaks[10] = {0}; // Array to store valid peaks (up to 10 for simplicity)
+  int peakCount = 0;
 
-  while (millis() - startTime < 5000) { // Listen for 5 seconds
+  while (millis() - startTime < 5000) { // Listen for up to 5 seconds
     if (fft1024.available()) {
-      float maxMagnitude = 0;
-      int maxBin = 0;
-
-      // Find the bin with the highest magnitude
-      for (int i = 0; i < 512; i++) { // FFT1024 gives 512 bins (Nyquist limit)
-        float magnitude = fft1024.read(i);
-        if (magnitude > maxMagnitude) {
-          maxMagnitude = magnitude;
-          maxBin = i;
-        }
-      }
-
-      // Calculate the frequency corresponding to the max bin
-      float frequency = maxBin * (44100.0 / 1024.0); // Fs / FFT size
-
-      // Update maxVolume and fundamentalFrequency if this reading has a higher volume
+      // Check for audio input exceeding the threshold
       int audioInput = analogRead(micPin);
-      if (audioInput > threshold && maxMagnitude > maxVolume) {
-        maxVolume = maxMagnitude;
-        fundamentalFrequency = frequency;
+      if (audioInput > threshold) {
+        // Process FFT to find peaks
+        float binMagnitudes[512];
+        for (int i = 0; i < 512; i++) {
+          binMagnitudes[i] = fft1024.read(i);
+        }
+
+        // Peak detection
+        for (int i = 1; i < 511; i++) {
+          if (binMagnitudes[i] > binMagnitudes[i - 1] && binMagnitudes[i] > binMagnitudes[i + 1] &&
+              binMagnitudes[i] > 0.01) { // Consider only peaks with magnitude > 0.01
+            float frequency = i * (44100.0 / 1024.0); // Fs / FFT size
+            if (frequency > 20.0 && frequency < 5000.0) { // Valid frequency range
+              validPeaks[peakCount++] = frequency;
+              if (peakCount >= 10) break; // Limit to 10 peaks
+            }
+          }
+        }
+
+        // Harmonic analysis to identify the fundamental
+        if (peakCount > 0) {
+          for (int i = 0; i < peakCount; i++) {
+            bool isFundamental = true;
+            for (int j = 0; j < peakCount; j++) {
+              if (j != i && fabs(validPeaks[j] / validPeaks[i] - round(validPeaks[j] / validPeaks[i])) < 0.1) {
+                // Check if validPeaks[j] is a harmonic of validPeaks[i]
+                continue;
+              }
+              if (j != i && validPeaks[j] < validPeaks[i]) {
+                isFundamental = false; // If a smaller peak matches as a harmonic, this is not fundamental
+              }
+            }
+            if (isFundamental) {
+              fundamentalFrequency = validPeaks[i];
+              break;
+            }
+          }
+        }
+
+        // Determine the closest note to the fundamental frequency
+        if (fundamentalFrequency > 20.0 && fundamentalFrequency < 5000.0) { // Valid range for musical notes
+          int noteIndex = round(12.0 * log2(fundamentalFrequency / 440.0)) + 69; // MIDI number
+          int octave = (noteIndex / 12) - 1; // Calculate octave
+          int note = noteIndex % 12; // Note within the octave
+
+          // Construct the note as a string (e.g., "A4")
+          return String(noteNames[note]) + String(octave);
+        }
       }
     }
   }
 
-  // Determine the closest note to the dominant frequency
-  if (fundamentalFrequency > 20.0 && fundamentalFrequency < 5000.0) { // Valid range for musical notes
-    int noteIndex = round(12.0 * log2(fundamentalFrequency / 440.0)) + 69; // MIDI number
-    int octave = (noteIndex / 12) - 1; // Calculate octave
-    int note = noteIndex % 12; // Note within the octave
-
-    // Construct the note as a string (e.g., "A4")
-    detectedNote = String(noteNames[note]) + String(octave);
-  }
-
-  return detectedNote; // Return the detected note
+  // If no note was detected within 5 seconds
+  return "";
 }
+
